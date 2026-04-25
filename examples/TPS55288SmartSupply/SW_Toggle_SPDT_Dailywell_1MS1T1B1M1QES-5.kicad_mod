@@ -1,0 +1,126 @@
+(footprint "SW_Toggle_SPDT_Dailywell_1MS1T1B1M1QES-5"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Dailywell 1MS1T1B1M1QES-5 miniature SPDT toggle switch, 28VDC 5A. Pad pitch follows the 1M-series PC-pin pattern.")
+	(tags "switch SPDT toggle Dailywell 1M")
+	(property "Reference" "REF**"
+		(at 4.7 -5 0)
+		(layer "F.SilkS")
+		(uuid "17f0c111-7911-4479-b0e9-e6f46fd8b1fd")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "SW_Toggle_SPDT_Dailywell_1MS1T1B1M1QES-5"
+		(at 4.7 5 0)
+		(layer "F.Fab")
+		(uuid "ccf25457-58ca-4837-8f7f-2fda4ee4f6ce")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "0b5618ea-0534-4f04-9554-65e85450768c")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "f77f8c1d-0e49-4193-8401-1d705cf1f9f8")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr through_hole)
+	(fp_rect
+		(start -1.65 -3.43)
+		(end 11.05 3.43)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.SilkS")
+		(uuid "8e7840fb-14a4-4b68-bd11-e910b778e678")
+	)
+	(fp_rect
+		(start -2.2 -4.0)
+		(end 11.6 4.0)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "da85de41-d0cc-40f2-91a6-a6533ea2441e")
+	)
+	(fp_rect
+		(start -1.55 -3.33)
+		(end 10.95 3.33)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "14d61f89-ee28-4e0f-8cf7-d47a0a1f5fd9")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 4.7 0 0)
+		(layer "F.Fab")
+		(uuid "7b7f8029-0f40-4d3d-bf10-5db1c0d9ac59")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(pad "1" thru_hole rect
+		(at 0 0)
+		(size 2.3 2.3)
+		(drill 1.4)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "87a80c7e-a34c-4725-bdb2-83019128772b")
+	)
+	(pad "2" thru_hole circle
+		(at 4.7 0)
+		(size 2.3 2.3)
+		(drill 1.4)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "e6907f83-0fb4-4640-8536-3889976150b8")
+	)
+	(pad "3" thru_hole circle
+		(at 9.4 0)
+		(size 2.3 2.3)
+		(drill 1.4)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "9cb11ec7-c1cb-45ac-8a32-ae770f63ce0f")
+	)
+	(embedded_fonts no)
+)

@@ -1,0 +1,925 @@
+"""
+TPS55288-based smart buck-boost power supply.
+
+This is a more credible replacement for a low-cost LTC3780-style CC/CV module:
+- Buck-boost power stage around TI TPS55288
+- MCU-managed voltage and current setpoints over I2C
+- MCU-managed USB-PD / PPS sink negotiation through STM32 UCPD
+- INA226 output telemetry for voltage/current display
+- 4-pin header for a common SSD1306 I2C OLED module
+- EC11 rotary encoder with pushbutton for the user interface
+- Wide-range screw-terminal input plus USB-C PD/PPS input
+- Manual source-select switch between the two input sources
+
+Intended operating envelope:
+- VIN_MAIN: 3.3V to 28V at the screw terminal
+- VIN_USB: 5V to 20V negotiated USB-C PD/PPS input
+- VOUT: 0.8V to 20V, software-programmable
+- IOUT: software-limited, practical continuous target about 5A to 6A
+
+This is a schematic starting point. It does not include firmware, thermal validation,
+or a finished layout.
+"""
+
+load("@stdlib/interfaces.zen", "Gpio", "I2c", "NotConnected")
+load("@stdlib/units.zen", "Current", "Voltage")
+
+Capacitor = Module("@stdlib/generics/Capacitor.zen")
+PinHeader = Module("@stdlib/generics/PinHeader.zen")
+Resistor = Module("@stdlib/generics/Resistor.zen")
+TerminalBlock = Module("@stdlib/generics/TerminalBlock.zen")
+
+PowerRail = builtin.net_type(
+    "PowerRail",
+    voltage=Voltage,
+    max_current=Current,
+)
+
+PowerPath = builtin.net_type(
+    "PowerPath",
+    max_current=Current,
+)
+
+VIN_MAIN = PowerRail(voltage="3.3V - 28V", max_current="6A")
+VIN_USB = PowerRail(voltage="5V - 20V", max_current="3A")
+VIN_USB_FUSED = PowerRail(voltage="5V - 20V", max_current="3A")
+VIN = PowerRail(voltage="3.3V - 28V", max_current="6A")
+VOUT_RAW = PowerRail(voltage="0.8V - 20V", max_current="6A")
+VOUT = PowerRail(voltage="0.8V - 20V", max_current="6A")
+GND = Ground()
+VCC_5V = Power(voltage="5V")
+VDD_3V3 = Power(voltage="3.3V")
+I2C_CTRL = I2c("I2C_CTRL")
+
+SW1 = PowerPath(max_current="6A")
+SW2 = PowerPath(max_current="6A")
+DRIVE_H = Net()
+DRIVE_L = Net()
+Q1_GATE = Net()
+Q2_GATE = Net()
+BOOT1 = Net()
+BOOT2 = Net()
+EN_UVLO = Net()
+MODE_CFG = Net()
+FSW_CFG = Net()
+DITH_SYNC = Net()
+ILIM_CFG = Net()
+COMP = Net()
+COMP_RC = Net()
+ENC_A = Gpio()
+ENC_B = Gpio()
+ENC_SW = Gpio()
+INA_ALERT_N = Gpio()
+USB_CC1 = Net()
+USB_CC2 = Net()
+MAIN_PRESENT = Gpio()
+USB_DBCC1 = Net()
+USB_DBCC2 = Net()
+SWDIO = Gpio()
+SWCLK = Gpio()
+NRST = Gpio()
+SWO = Gpio()
+DBG_KEY = Net()
+DBG_NC = Net()
+ISENSE_P = Net()  # INA226 Vin+ side (after RFILT_ISP filter resistor)
+ISENSE_N = Net()  # INA226 Vin- side (after RFILT_ISN filter resistor)
+
+Component(
+    name="U1",
+    symbol=Symbol(library="./TPS55288RPMR.kicad_sym"),
+    footprint=File("./TPS55288RPMR.kicad_mod"),
+    part=Part(
+        mpn="TPS55288RPMR",
+        manufacturer="Texas Instruments",
+    ),
+    properties={
+        "description": "36V, 16A buck-boost converter with digital CV/CC control",
+        "lcsc": "C2864583",
+    },
+    pins={
+        "DR1L_1": DRIVE_L,
+        "DR1H": DRIVE_H,
+        "VIN": VIN,
+        "EN_UVLO": EN_UVLO,
+        "SCL": I2C_CTRL.SCL,
+        "SDA": I2C_CTRL.SDA,
+        "DITH_SYNC_1": DITH_SYNC,
+        "FSW": FSW_CFG,
+        "PGND_1": GND,
+        "AGND": GND,
+        "VOUT_1": VOUT_RAW,
+        "ISP": VOUT_RAW,
+        "ISN_1": VOUT,
+        "FB_INT": NotConnected(),
+        "MODE": MODE_CFG,
+        "CDC": NotConnected(),
+        "ILIM": ILIM_CFG,
+        "COMP": COMP,
+        "VCC_1": VCC_5V,
+        "BOOT2": BOOT2,
+        "SW2_1": SW2,
+        "BOOT1": BOOT1,
+        "SW1": SW1,
+        "PGND_2": GND,
+        "SW2_2": SW2,
+        "VOUT_2": VOUT_RAW,
+        "DR1L_2": DRIVE_L,
+        "DITH_SYNC_2": DITH_SYNC,
+        "ISN_2": VOUT,
+        "VCC_2": VCC_5V,
+    },
+)
+
+Component(
+    name="Q1",
+    symbol=Symbol(library="./PowerNMOS_5pin.kicad_sym"),
+    footprint="@kicad-footprints/Package_SO.pretty/ONSemi_SO-8FL_488AA.kicad_mod",
+    part=Part(mpn="NTMFS5C628NLT1G", manufacturer="onsemi"),
+    properties={
+        "description": "Buck-leg high-side MOSFET",
+        "lcsc": "C145537",
+        "rds_on": "3.3mOhm @ 4.5V",
+    },
+    pins={
+        "G": Q1_GATE,
+        "D": VIN,
+        "S_1": SW1,
+        "S_2": SW1,
+        "S_3": SW1,
+    },
+)
+
+Component(
+    name="Q2",
+    symbol=Symbol(library="./PowerNMOS_5pin.kicad_sym"),
+    footprint="@kicad-footprints/Package_SO.pretty/ONSemi_SO-8FL_488AA.kicad_mod",
+    part=Part(mpn="NTMFS5C628NLT1G", manufacturer="onsemi"),
+    properties={
+        "description": "Buck-leg low-side MOSFET",
+        "lcsc": "C145537",
+        "rds_on": "3.3mOhm @ 4.5V",
+    },
+    pins={
+        "G": Q2_GATE,
+        "D": SW1,
+        "S_1": GND,
+        "S_2": GND,
+        "S_3": GND,
+    },
+)
+
+Component(
+    name="L1",
+    symbol=Symbol(library="@kicad-symbols/Device.kicad_sym", name="L"),
+    footprint="@kicad-footprints/Inductor_SMD.pretty/L_Changjiang_FXL1360.kicad_mod",
+    part=Part(mpn="VCMA-1365-4R7-M-1A", manufacturer="MAZO"),
+    properties={
+        "value": "4.7uH",
+        "lcsc": "C53133013",
+        "current": "20A",
+        "isat": "24A",
+        "dcr": "6.9mOhm typ",
+    },
+    pins={
+        "1": SW1,
+        "2": SW2,
+    },
+)
+
+Component(
+    name="U2",
+    symbol=Symbol(library="@kicad-symbols/Sensor_Energy.kicad_sym", name="INA226"),
+    footprint="Package_SO:VSSOP-10_3x3mm_P0.5mm",
+    part=Part(
+        mpn="INA226AIDGSR",
+        manufacturer="Texas Instruments",
+    ),
+    properties={
+        "description": "Output voltage/current telemetry",
+        "lcsc": "C49851",
+    },
+    pins={
+        "A1": GND,
+        "A0": GND,
+        "~{Alert}": INA_ALERT_N,
+        "SDA": I2C_CTRL.SDA,
+        "SCL": I2C_CTRL.SCL,
+        "VS": VDD_3V3,
+        "GND": GND,
+        "Vbus": VOUT_RAW,  # Bus voltage measured pre-shunt for accurate power calculation
+        "Vin-": ISENSE_N,  # Filtered shunt sense, load side
+        "Vin+": ISENSE_P,  # Filtered shunt sense, converter side
+    },
+)
+
+Component(
+    name="U3",
+    symbol=Symbol(library="@kicad-symbols/Regulator_Linear.kicad_sym", name="AP2112K-3.3"),
+    footprint="Package_TO_SOT_SMD:SOT-23-5",
+    part=Part(
+        mpn="AP2112K-3.3TRG1",
+        manufacturer="Diodes Incorporated",
+    ),
+    properties={
+        "description": "3.3V rail for MCU, OLED, and telemetry",
+        "lcsc": "C51118",
+    },
+    pins={
+        "VIN": VCC_5V,
+        "EN": VCC_5V,
+        "GND": GND,
+        "VOUT": VDD_3V3,
+    },
+)
+
+Component(
+    name="U4",
+    symbol=Symbol(library="@kicad-symbols/MCU_ST_STM32G0.kicad_sym", name="STM32G0B1CBTx"),
+    footprint="Package_QFP:LQFP-48_7x7mm_P0.5mm",
+    part=Part(
+        mpn="STM32G0B1CBT6",
+        manufacturer="STMicroelectronics",
+    ),
+    properties={
+        "description": "UI, power-control, and USB-PD/PPS MCU",
+        "lcsc": "C2847904",
+    },
+    pins={
+        "VREF+": VDD_3V3,
+        "VBAT": VDD_3V3,
+        "PB8": I2C_CTRL.SCL,
+        "PB9": I2C_CTRL.SDA,
+        "VDD": VDD_3V3,
+        "VSS": GND,
+        "PF2": NRST,
+        "PA0": ENC_A,
+        "PA1": ENC_B,
+        "PA2": ENC_SW,
+        "PA3": INA_ALERT_N,
+        "PA4": NotConnected(),
+        "PA5": NotConnected(),
+        "PA6": MAIN_PRESENT,
+        "PA7": NotConnected(),
+        "PB3": SWO,
+        "PA8": USB_CC1,
+        "PA9/PA11": NotConnected(),
+        "PB15": USB_CC2,
+        "PA9/UCPD1_DBCC1": USB_DBCC1,
+        "PA10/PA12": NotConnected(),
+        "PA10/UCPD1_DBCC2": USB_DBCC2,
+        "PA13": SWDIO,
+        "PA14": SWCLK,
+        "PA15": NotConnected(),
+        "PB0": NotConnected(),
+        "PB1": NotConnected(),
+        "PB2": NotConnected(),
+        "PB4": NotConnected(),
+        "PB5": NotConnected(),
+        "PB6": NotConnected(),
+        "PB7": NotConnected(),
+        "PB10": NotConnected(),
+        "PB11": NotConnected(),
+        "PB12": NotConnected(),
+        "PB13": NotConnected(),
+        "PB14": NotConnected(),
+        "PC6": NotConnected(),
+        "PC7": NotConnected(),
+        "PC13": NotConnected(),
+        "PC14": NotConnected(),
+        "PC15": NotConnected(),
+        "PD0": NotConnected(),
+        "PD1": NotConnected(),
+        "PD2": NotConnected(),
+        "PD3": NotConnected(),
+        "PF0": NotConnected(),
+        "PF1": NotConnected(),
+    },
+)
+
+Component(
+    name="SWENC",
+    symbol=Symbol(library="@kicad-symbols/Device.kicad_sym", name="RotaryEncoder_Switch_MP"),
+    footprint="@kicad-footprints/Rotary_Encoder.pretty/RotaryEncoder_Alps_EC11E-Switch_Vertical_H20mm.kicad_mod",
+    part=Part(mpn="EC11N1525404", manufacturer="ALPS Alpine"),
+    properties={
+        "description": "User knob with push switch",
+        "lcsc": "C470748",
+    },
+    pins={
+        "A": ENC_A,
+        "B": ENC_B,
+        "C": GND,
+        "MP": GND,
+        "S1": ENC_SW,
+        "S2": GND,
+    },
+)
+
+Component(
+    name="JUSB",
+    symbol=Symbol(library="@kicad-symbols/Connector.kicad_sym", name="USB_C_Receptacle_PowerOnly_6P"),
+    footprint="@kicad-footprints/Connector_USB.pretty/USB_C_Receptacle_GCT_USB4125-xx-x-0190_6P_TopMnt_Horizontal.kicad_mod",
+    part=Part(
+        mpn="USB4125-GF-A",
+        manufacturer="Global Connector Technology",
+    ),
+    properties={
+        "description": "USB-C power input for MCU-managed PD/PPS sink operation",
+    },
+    pins={
+        "VBUS": VIN_USB,
+        "GND": GND,
+        "CC1": USB_CC1,
+        "CC2": USB_CC2,
+        "SHIELD": GND,
+    },
+    type="connector",
+)
+
+TerminalBlock(
+    name="JIN",
+    pins=2,
+    pitch="5.0mm",
+    P1=VIN_MAIN,
+    P2=GND,
+)
+
+TerminalBlock(
+    name="JOUT",
+    pins=2,
+    pitch="5.0mm",
+    P1=VOUT,
+    P2=GND,
+)
+
+PinHeader(
+    name="JOLED",
+    pins=4,
+    rows=1,
+    mount="THT",
+    pitch="2.54mm",
+    orientation="Vertical",
+    gender="Female",
+    P1=GND,
+    P2=VDD_3V3,
+    P3=I2C_CTRL.SCL,
+    P4=I2C_CTRL.SDA,
+)
+
+PinHeader(
+    name="JSWD",
+    pins=5,
+    rows=2,
+    mount="THT",
+    pitch="1.27mm",
+    orientation="Vertical",
+    gender="Male",
+    P1=VDD_3V3,
+    P2=SWDIO,
+    P3=GND,
+    P4=SWCLK,
+    P5=GND,
+    P6=SWO,
+    P7=DBG_KEY,
+    P8=DBG_NC,
+    P9=GND,
+    P10=NRST,
+)
+
+Component(
+    name="FUSB",
+    symbol=Symbol(library="@kicad-symbols/Device.kicad_sym", name="Fuse_Small"),
+    footprint="@kicad-footprints/Fuse.pretty/Fuse_1812_4532Metric.kicad_mod",
+    part=Part(
+        mpn="1812L300/30GR",
+        manufacturer="LUTE",
+    ),
+    properties={
+        "description": "USB-C input 3A hold / 5A trip PTC fuse (1812, 30V)",
+        "lcsc": "C48985875",
+    },
+    pins={
+        "1": VIN_USB,
+        "2": VIN_USB_FUSED,
+    },
+)
+
+Component(
+    name="SWIN",
+    symbol=Symbol(library="@kicad-symbols/Switch.kicad_sym", name="SW_SPDT"),
+    footprint=File("./SW_Toggle_SPDT_Dailywell_1MS1T1B1M1QES-5.kicad_mod"),
+    part=Part(
+        mpn="1MS1T1B1M1QES-5",
+        manufacturer="Dailywell",
+    ),
+    properties={
+        "description": "Manual input source select switch, 28VDC/5A rated",
+        "lcsc": "C496154",
+    },
+    pins={
+        "A": VIN_MAIN,
+        "B": VIN,
+        "C": VIN_USB_FUSED,
+    },
+)
+
+Component(
+    name="TVSUSB",
+    symbol=Symbol(library="@kicad-symbols/Device.kicad_sym", name="D_TVS"),
+    footprint="Diode_SMD:D_SMB",
+    part=Part(mpn="SMBJ24A", manufacturer="hongjiacheng"),
+    properties={
+        "description": "USB-C PD input surge clamp for up to 20V VBUS",
+        "lcsc": "C19077578",
+    },
+    pins={
+        "A1": GND,
+        "A2": VIN_USB_FUSED,
+    },
+)
+
+Resistor(
+    name="RG_HS",
+    value="1ohm 1%",
+    package="0603",
+    P1=DRIVE_H,
+    P2=Q1_GATE,
+)
+
+Resistor(
+    name="RG_LS",
+    value="1ohm 1%",
+    package="0603",
+    P1=DRIVE_L,
+    P2=Q2_GATE,
+)
+
+# UVLO divider: EN/UVLO rising threshold = 1.23V (TPS55288 datasheet), target UVLO ~ 3.3V
+# V_TH = 1.23 * (196k + 115k) / 115k = 3.33V
+Resistor(
+    name="RUVLO_TOP",
+    value="196kohm 1%",
+    package="0603",
+    P1=VIN,
+    P2=EN_UVLO,
+)
+
+Resistor(
+    name="RUVLO_BOTTOM",
+    value="115kohm 1%",
+    package="0402",
+    P1=EN_UVLO,
+    P2=GND,
+)
+
+Resistor(
+    name="RFSW",
+    value="49.9kohm 1%",
+    package="0402",
+    P1=FSW_CFG,
+    P2=GND,
+)
+
+Resistor(
+    name="RMODE",
+    value="0ohm",
+    package="0402",
+    P1=MODE_CFG,
+    P2=GND,
+)
+
+Resistor(
+    name="RILIM",
+    value="20kohm 1%",
+    package="0402",
+    P1=ILIM_CFG,
+    P2=GND,
+)
+
+Resistor(
+    name="RCOMP",
+    value="56.2kohm 1%",
+    package="0402",
+    P1=COMP,
+    P2=COMP_RC,
+)
+
+Resistor(
+    name="RSENSE",
+    value="5mOhm 1%",
+    package="2512",
+    power="2W",
+    mpn="PA2512FKF7T0R005E",
+    manufacturer="YAGEO",
+    P1=VOUT_RAW,
+    P2=VOUT,
+)
+
+# INA226 input RC filter: 10Ω series + 100nF differential (CISENSE)
+# pole at 1/(2π × 20Ω × 100nF) ≈ 80kHz — well above DC/audio, well below switching frequency
+Resistor(
+    name="RFILT_ISP",
+    value="10ohm 1%",
+    package="0402",
+    P1=VOUT_RAW,
+    P2=ISENSE_P,
+)
+
+Resistor(
+    name="RFILT_ISN",
+    value="10ohm 1%",
+    package="0402",
+    P1=VOUT,
+    P2=ISENSE_N,
+)
+
+Resistor(
+    name="RI2C_SCL",
+    value="2.2kohm 1%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=I2C_CTRL.SCL,
+)
+
+Resistor(
+    name="RI2C_SDA",
+    value="2.2kohm 1%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=I2C_CTRL.SDA,
+)
+
+Resistor(
+    name="RENC_A",
+    value="10kohm 1%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=ENC_A,
+)
+
+Resistor(
+    name="RENC_B",
+    value="10kohm 1%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=ENC_B,
+)
+
+Resistor(
+    name="RENC_SW",
+    value="10kohm 1%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=ENC_SW,
+)
+
+Resistor(
+    name="RNRST",
+    value="10kohm 1%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=NRST,
+)
+
+Resistor(
+    name="RDBCC1",
+    value="0ohm",
+    package="0402",
+    P1=USB_CC1,
+    P2=USB_DBCC1,
+)
+
+Resistor(
+    name="RDBCC2",
+    value="0ohm",
+    package="0402",
+    P1=USB_CC2,
+    P2=USB_DBCC2,
+)
+
+Resistor(
+    name="RMAIN_SENSE_TOP",
+    value="100kohm 1%",
+    package="0402",
+    P1=VIN_MAIN,
+    P2=MAIN_PRESENT,
+)
+
+Resistor(
+    name="RMAIN_SENSE_BOTTOM",
+    value="100kohm 1%",
+    package="0402",
+    P1=MAIN_PRESENT,
+    P2=GND,
+)
+
+Capacitor(
+    name="CIN_BULK",
+    value="10uF 10%",
+    package="1206",
+    mpn="CL31A106KBHNNNE",
+    manufacturer="Samsung Electro-Mechanics",
+    P1=VIN,
+    P2=GND,
+)
+
+# Upstream bulk cap on VIN_MAIN before the source-select switch: absorbs hot-plug inrush from screw terminal
+Capacitor(
+    name="CMAIN_IN",
+    value="10uF 10%",
+    package="1206",
+    mpn="CL31A106KBHNNNE",
+    manufacturer="Samsung Electro-Mechanics",
+    P1=VIN_MAIN,
+    P2=GND,
+)
+
+Capacitor(
+    name="CUSB_IN",
+    value="10uF 10%",
+    package="1206",
+    mpn="CL31A106KBHNNNE",
+    manufacturer="Samsung Electro-Mechanics",
+    P1=VIN_USB_FUSED,
+    P2=GND,
+)
+
+Capacitor(
+    name="CIN1",
+    value="10uF 10%",
+    package="1206",
+    mpn="CL31A106KBHNNNE",
+    manufacturer="Samsung Electro-Mechanics",
+    P1=VIN,
+    P2=GND,
+)
+
+Capacitor(
+    name="CIN2",
+    value="10uF 10%",
+    package="1206",
+    mpn="CL31A106KBHNNNE",
+    manufacturer="Samsung Electro-Mechanics",
+    P1=VIN,
+    P2=GND,
+)
+
+Capacitor(
+    name="CIN3",
+    value="10uF 10%",
+    package="1206",
+    mpn="CL31A106KBHNNNE",
+    manufacturer="Samsung Electro-Mechanics",
+    P1=VIN,
+    P2=GND,
+)
+
+Capacitor(
+    name="CVIN_U1",
+    value="1uF 20%",
+    package="0603",
+    mpn="CL10A105KB8NNNC",
+    manufacturer="Samsung Electro-Mechanics",
+    P1=VIN,
+    P2=GND,
+)
+
+Capacitor(
+    name="CBOOT1",
+    value="100nF 10%",
+    package="0402",
+    P1=BOOT1,
+    P2=SW1,
+)
+
+Capacitor(
+    name="CBOOT2",
+    value="100nF 10%",
+    package="0402",
+    P1=BOOT2,
+    P2=SW2,
+)
+
+Capacitor(
+    name="CVCC",
+    value="4.7uF 10%",
+    package="0603",
+    P1=VCC_5V,
+    P2=GND,
+)
+
+Capacitor(
+    name="CSYNC",
+    value="10nF 10%",
+    package="0402",
+    P1=DITH_SYNC,
+    P2=GND,
+)
+
+Capacitor(
+    name="CCOMP_Z",
+    value="4.7nF 10%",
+    package="0402",
+    mpn="0402B472K500NT",
+    manufacturer="FH",
+    P1=COMP_RC,
+    P2=GND,
+)
+
+Capacitor(
+    name="CCOMP_HF",
+    value="100pF 5%",
+    package="0402",
+    P1=COMP,
+    P2=COMP_RC,
+)
+
+# Differential cap across INA226 filtered inputs — completes the RC anti-alias filter
+Capacitor(
+    name="CISENSE",
+    value="100nF 10%",
+    package="0402",
+    P1=ISENSE_P,
+    P2=ISENSE_N,
+)
+
+Capacitor(
+    name="COUT1",
+    value="10uF 10%",
+    package="1206",
+    P1=VOUT_RAW,
+    P2=GND,
+)
+
+Capacitor(
+    name="COUT2",
+    value="10uF 10%",
+    package="1206",
+    P1=VOUT_RAW,
+    P2=GND,
+)
+
+Capacitor(
+    name="COUT3",
+    value="10uF 10%",
+    package="1206",
+    P1=VOUT_RAW,
+    P2=GND,
+)
+
+Capacitor(
+    name="COUT4",
+    value="10uF 10%",
+    package="1206",
+    P1=VOUT_RAW,
+    P2=GND,
+)
+
+Capacitor(
+    name="COUT_BULK",
+    value="10uF 10%",
+    package="1206",
+    mpn="CL31A106KBHNNNE",
+    manufacturer="Samsung Electro-Mechanics",
+    P1=VOUT_RAW,
+    P2=GND,
+)
+
+Capacitor(
+    name="COUT5",
+    value="10uF 10%",
+    package="1206",
+    mpn="CL31A106KBHNNNE",
+    manufacturer="Samsung Electro-Mechanics",
+    P1=VOUT_RAW,
+    P2=GND,
+)
+
+Capacitor(
+    name="COUT_SENSE",
+    value="1uF 20%",
+    package="0603",
+    mpn="CL10A105KB8NNNC",
+    manufacturer="Samsung Electro-Mechanics",
+    P1=VOUT,
+    P2=GND,
+)
+
+Capacitor(
+    name="CINA226",
+    value="100nF 10%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=GND,
+)
+
+Resistor(
+    name="RINA_ALERT",
+    value="10kohm 1%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=INA_ALERT_N,
+)
+
+Capacitor(
+    name="CLDO_IN",
+    value="1uF 10%",
+    package="0402",
+    P1=VCC_5V,
+    P2=GND,
+)
+
+Capacitor(
+    name="CLDO_OUT",
+    value="1uF 10%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=GND,
+)
+
+Capacitor(
+    name="CMCUDD",
+    value="100nF 10%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=GND,
+)
+
+Capacitor(
+    name="CMCUBULK",
+    value="1uF 10%",
+    package="0402",
+    P1=VDD_3V3,
+    P2=GND,
+)
+
+Board(
+    name="tps55288_smart_supply",
+    layers=4,
+    layout_path="layout/tps55288_smart_supply",
+)
+
+# pcb:sch JIN.TB x=125.0000 y=175.0000 rot=0
+# pcb:sch CMAIN_IN.C x=300.0000 y=150.0000 rot=0
+# pcb:sch SWIN x=475.0000 y=175.0000 rot=0
+# pcb:sch RMAIN_SENSE_TOP.R x=175.0000 y=325.0000 rot=90
+# pcb:sch RMAIN_SENSE_BOTTOM.R x=175.0000 y=450.0000 rot=90
+# pcb:sch JUSB x=125.0000 y=725.0000 rot=0
+# pcb:sch FUSB x=325.0000 y=625.0000 rot=90
+# pcb:sch CUSB_IN.C x=350.0000 y=850.0000 rot=0
+# pcb:sch TVSUSB x=500.0000 y=725.0000 rot=90
+# pcb:sch RDBCC1.R x=125.0000 y=875.0000 rot=90
+# pcb:sch RDBCC2.R x=250.0000 y=875.0000 rot=90
+# pcb:sch CIN_BULK.C x=725.0000 y=175.0000 rot=0
+# pcb:sch CIN1.C x=850.0000 y=175.0000 rot=0
+# pcb:sch CIN2.C x=975.0000 y=175.0000 rot=0
+# pcb:sch CIN3.C x=1100.0000 y=175.0000 rot=0
+# pcb:sch CVIN_U1.C x=1225.0000 y=175.0000 rot=0
+# pcb:sch CVCC.C x=1350.0000 y=175.0000 rot=0
+# pcb:sch Q1 x=775.0000 y=450.0000 rot=90
+# pcb:sch RG_HS.R x=890.0000 y=450.0000 rot=0
+# pcb:sch Q2 x=775.0000 y=725.0000 rot=90
+# pcb:sch RG_LS.R x=890.0000 y=725.0000 rot=0
+# pcb:sch CBOOT1.C x=925.0000 y=325.0000 rot=0
+# pcb:sch U1 x=1200.0000 y=587.5000 rot=0
+# pcb:sch CBOOT2.C x=1462.5000 y=325.0000 rot=0
+# pcb:sch L1 x=1612.5000 y=587.5000 rot=0
+# pcb:sch RSENSE.R x=1950.0000 y=587.5000 rot=90
+# pcb:sch RFILT_ISP.R x=2075.0000 y=500.0000 rot=90
+# pcb:sch RFILT_ISN.R x=2075.0000 y=675.0000 rot=90
+# pcb:sch CISENSE.C x=2200.0000 y=587.5000 rot=90
+# pcb:sch U2 x=2350.0000 y=587.5000 rot=0
+# pcb:sch CINA226.C x=2475.0000 y=475.0000 rot=0
+# pcb:sch RINA_ALERT.R x=2475.0000 y=675.0000 rot=90
+# pcb:sch COUT_SENSE.C x=2475.0000 y=800.0000 rot=0
+# pcb:sch RUVLO_TOP.R x=925.0000 y=975.0000 rot=90
+# pcb:sch RUVLO_BOTTOM.R x=925.0000 y=1100.0000 rot=90
+# pcb:sch RFSW.R x=1100.0000 y=975.0000 rot=90
+# pcb:sch RMODE.R x=1225.0000 y=975.0000 rot=90
+# pcb:sch RILIM.R x=1350.0000 y=975.0000 rot=90
+# pcb:sch CSYNC.C x=1475.0000 y=975.0000 rot=0
+# pcb:sch RCOMP.R x=1625.0000 y=950.0000 rot=90
+# pcb:sch CCOMP_HF.C x=1750.0000 y=950.0000 rot=90
+# pcb:sch CCOMP_Z.C x=1750.0000 y=1075.0000 rot=90
+# pcb:sch COUT1.C x=1675.0000 y=175.0000 rot=0
+# pcb:sch COUT2.C x=1800.0000 y=175.0000 rot=0
+# pcb:sch COUT3.C x=1925.0000 y=175.0000 rot=0
+# pcb:sch COUT4.C x=2050.0000 y=175.0000 rot=0
+# pcb:sch COUT_BULK.C x=2175.0000 y=175.0000 rot=0
+# pcb:sch COUT5.C x=2300.0000 y=175.0000 rot=0
+# pcb:sch JOUT.TB x=2700.0000 y=587.5000 rot=0
+# pcb:sch CLDO_IN.C x=975.0000 y=1362.5000 rot=0
+# pcb:sch U3 x=1125.0000 y=1425.0000 rot=0
+# pcb:sch CLDO_OUT.C x=975.0000 y=1487.5000 rot=0
+# pcb:sch CMCUDD.C x=1425.0000 y=1450.0000 rot=0
+# pcb:sch U4 x=1650.0000 y=1562.5000 rot=0
+# pcb:sch CMCUBULK.C x=1425.0000 y=1600.0000 rot=0
+# pcb:sch RI2C_SCL.R x=1862.5000 y=1425.0000 rot=90
+# pcb:sch RI2C_SDA.R x=1975.0000 y=1425.0000 rot=90
+# pcb:sch RNRST.R x=1450.0000 y=1725.0000 rot=90
+# pcb:sch RENC_A.R x=2350.0000 y=1462.5000 rot=90
+# pcb:sch JOLED.PH x=2525.0000 y=1325.0000 rot=0
+# pcb:sch RENC_B.R x=2350.0000 y=1600.0000 rot=90
+# pcb:sch SWENC x=2500.0000 y=1600.0000 rot=0
+# pcb:sch RENC_SW.R x=2350.0000 y=1737.5000 rot=90
+# pcb:sch JSWD.PH x=2525.0000 y=1862.5000 rot=0

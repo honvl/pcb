@@ -1,0 +1,526 @@
+"""
+LTC3780-based adjustable buck converter.
+
+Reference design basis:
+- LTC3780 datasheet Rev. G typical application
+- DC686A LTC3780 evaluation board schematic
+
+Target operating point:
+- VIN: 5V source capable of up to 12A
+- VOUT: adjustable around 3.3V, nominal trim range about 2.9V to 3.7V
+- IOUT: 10A target in buck mode
+
+This is a schematic starting point. Loop compensation, MOSFET/inductor thermals,
+capacitor DC bias derating, and transient response still need bench validation.
+"""
+
+load("@stdlib/units.zen", "Current", "Voltage")
+
+Resistor = Module("@stdlib/generics/Resistor.zen")
+Capacitor = Module("@stdlib/generics/Capacitor.zen")
+TerminalBlock = Module("@stdlib/generics/TerminalBlock.zen")
+
+PowerRail = builtin.net_type(
+    "PowerRail",
+    voltage=Voltage,
+    max_current=Current,
+)
+
+PowerPath = builtin.net_type(
+    "PowerPath",
+    max_current=Current,
+)
+
+VIN_5V = PowerRail(voltage="5V", max_current="15A")
+VOUT_ADJ = PowerRail(voltage="2.9V - 3.7V", max_current="15A")
+GND = Ground()
+
+CS = PowerPath(max_current="15A")
+SW1 = PowerPath(max_current="15A")
+SW2 = PowerPath(max_current="15A")
+BOOST1 = Net()
+BOOST2 = Net()
+TG1_GATE = Net()
+BG1_GATE = Net()
+TG2_GATE = Net()
+BG2_GATE = Net()
+INTVCC = Net()
+SS = Net()
+STBYMD = Net()
+ITH = Net()
+ITH_RC = Net()
+VFB = Net()
+VFB_TOP = Net()
+PGOOD = Net()
+
+Component(
+    name="U1",
+    symbol=Symbol(library="./LTC3780EG.kicad_sym"),
+    footprint="Package_SO:SSOP-24_5.3x7.2mm_P0.65mm",
+    part=Part(
+        mpn="LTC3780EG#PBF",
+        manufacturer="Analog Devices",
+    ),
+    pins={
+        "PGOOD": PGOOD,
+        "SS": SS,
+        "SENSE+": CS,
+        "SENSE-": GND,
+        "ITH": ITH,
+        "VOSENSE": VFB,
+        "SGND": GND,
+        "RUN": VIN_5V,
+        "FCB": GND,
+        "PLLFLTR": GND,
+        "PLLIN": NotConnected(),
+        "STBYMD": STBYMD,
+        "BOOST1": BOOST1,
+        "TG1": TG1_GATE,
+        "SW1": SW1,
+        "VIN": VIN_5V,
+        "EXTVCC": NotConnected(),
+        "INTVCC": INTVCC,
+        "BG1": BG1_GATE,
+        "PGND": CS,
+        "BG2": BG2_GATE,
+        "SW2": SW2,
+        "TG2": TG2_GATE,
+        "BOOST2": BOOST2,
+    },
+)
+
+Component(
+    name="Q1",
+    symbol=Symbol(library="./PowerNMOS_5pin.kicad_sym"),
+    footprint="Package_SO:ONSemi_SO-8FL_488AA",
+    part=Part(mpn="NTMFS5C670NLT1G", manufacturer="onsemi"),
+    properties={
+        "description": "Input-side high-side N-MOSFET",
+        "rds_on": "8.8mOhm @ 4.5V",
+    },
+    pins={
+        "G": TG1_GATE,
+        "D": VIN_5V,
+        "S_1": SW1,
+        "S_2": SW1,
+        "S_3": SW1,
+    },
+)
+
+Component(
+    name="Q2",
+    symbol=Symbol(library="./PowerNMOS_5pin.kicad_sym"),
+    footprint="Package_SO:ONSemi_SO-8FL_488AA",
+    part=Part(mpn="NTMFS5C670NLT1G", manufacturer="onsemi"),
+    properties={
+        "description": "Input-side low-side N-MOSFET",
+        "rds_on": "8.8mOhm @ 4.5V",
+    },
+    pins={
+        "G": BG1_GATE,
+        "D": SW1,
+        "S_1": CS,
+        "S_2": CS,
+        "S_3": CS,
+    },
+)
+
+Component(
+    name="Q3",
+    symbol=Symbol(library="./PowerNMOS_5pin.kicad_sym"),
+    footprint="Package_SO:ONSemi_SO-8FL_488AA",
+    part=Part(mpn="NTMFS5C670NLT1G", manufacturer="onsemi"),
+    properties={
+        "description": "Output-side low-side N-MOSFET",
+        "rds_on": "8.8mOhm @ 4.5V",
+    },
+    pins={
+        "G": BG2_GATE,
+        "D": SW2,
+        "S_1": CS,
+        "S_2": CS,
+        "S_3": CS,
+    },
+)
+
+Component(
+    name="Q4",
+    symbol=Symbol(library="./PowerNMOS_5pin.kicad_sym"),
+    footprint="Package_SO:ONSemi_SO-8FL_488AA",
+    part=Part(mpn="NTMFS5C670NLT1G", manufacturer="onsemi"),
+    properties={
+        "description": "Output-side high-side N-MOSFET",
+        "rds_on": "8.8mOhm @ 4.5V",
+    },
+    pins={
+        "G": TG2_GATE,
+        "D": VOUT_ADJ,
+        "S_1": SW2,
+        "S_2": SW2,
+        "S_3": SW2,
+    },
+)
+
+Component(
+    name="D1",
+    symbol=Symbol(library="@kicad-symbols/Device.kicad_sym", name="D_Schottky"),
+    footprint="Diode_SMD:D_SMA",
+    part=Part(mpn="B340A-13-F", manufacturer="Diodes Inc."),
+    pins={
+        "A": CS,
+        "K": SW1,
+    },
+)
+
+Component(
+    name="D2",
+    symbol=Symbol(library="@kicad-symbols/Device.kicad_sym", name="D_Schottky"),
+    footprint="Diode_SMD:D_SMA",
+    part=Part(mpn="B340A-13-F", manufacturer="Diodes Inc."),
+    pins={
+        "A": SW2,
+        "K": VOUT_ADJ,
+    },
+)
+
+Component(
+    name="L1",
+    symbol=Symbol(library="@kicad-symbols/Device.kicad_sym", name="L"),
+    footprint=File("./XAL7070472MEC.kicad_mod"),
+    part=Part(mpn="XAL7070-472MEC", manufacturer="Coilcraft"),
+    properties={
+        "value": "4.7uH",
+        "current": "13.6A",
+        "isat": "15.2A",
+        "dcr": "14.26mOhm typ",
+    },
+    pins={
+        "1": SW1,
+        "2": SW2,
+    },
+)
+
+Component(
+    name="RV1",
+    symbol=Symbol(library="./TrimPot10k.kicad_sym"),
+    footprint="Potentiometer_SMD:Potentiometer_Bourns_TC33X_Vertical",
+    part=Part(mpn="TC33X-2-103E", manufacturer="Bourns"),
+    properties={
+        "value": "10kohm trim",
+        "description": "Output voltage adjust trim, wired as a rheostat",
+    },
+    pins={
+        "1": VFB_TOP,
+        "2": VFB,
+        "3": VFB,
+    },
+)
+
+TerminalBlock(
+    name="JIN",
+    pins=2,
+    pitch="5.0mm",
+    P1=VIN_5V,
+    P2=GND,
+)
+
+TerminalBlock(
+    name="JOUT",
+    pins=2,
+    pitch="5.0mm",
+    P1=VOUT_ADJ,
+    P2=GND,
+)
+
+Resistor(
+    name="RSENSE",
+    value="10mOhm 1%",
+    package="2512",
+    power="2W",
+    mpn="PA2512FKF7W0R01E",
+    manufacturer="YAGEO",
+    P1=CS,
+    P2=GND,
+)
+
+Resistor(
+    name="RFB_FIXED",
+    value="26.1kohm 1%",
+    package="0402",
+    mpn="ERJ-2RKF2612X",
+    manufacturer="Panasonic Electronic Components",
+    P1=VOUT_ADJ,
+    P2=VFB_TOP,
+)
+
+Resistor(
+    name="RFB_BOTTOM",
+    value="10kohm 1%",
+    package="0402",
+    mpn="ERJ-2RKF1002X",
+    manufacturer="Panasonic Electronic Components",
+    P1=VFB,
+    P2=GND,
+)
+
+Capacitor(
+    name="CFF",
+    value="47pF 1%",
+    package="0402",
+    voltage="50V",
+    dielectric="C0G",
+    mpn="GCM1555C1H470FA16D",
+    manufacturer="Murata Electronics",
+    P1=VOUT_ADJ,
+    P2=VFB,
+)
+
+Resistor(
+    name="RITH",
+    value="20kohm 1%",
+    package="0402",
+    mpn="ERJ-2RKF2002X",
+    manufacturer="Panasonic Electronic Components",
+    P1=ITH,
+    P2=ITH_RC,
+)
+
+Capacitor(
+    name="CITH",
+    value="2.2nF 2%",
+    package="0402",
+    voltage="50V",
+    dielectric="C0G",
+    mpn="GRM1555C1H222GA01D",
+    manufacturer="Murata Electronics",
+    P1=ITH_RC,
+    P2=GND,
+)
+
+Capacitor(
+    name="CP1",
+    value="100nF 10%",
+    package="0402",
+    voltage="50V",
+    dielectric="X7R",
+    mpn="GCM155R71H104KE02D",
+    manufacturer="Murata Electronics",
+    P1=ITH,
+    P2=GND,
+)
+
+Capacitor(
+    name="CBOOT1",
+    value="100nF 10%",
+    package="0402",
+    voltage="50V",
+    dielectric="X7R",
+    mpn="GCM155R71H104KE02D",
+    manufacturer="Murata Electronics",
+    P1=BOOST1,
+    P2=SW1,
+)
+
+Capacitor(
+    name="CBOOT2",
+    value="100nF 10%",
+    package="0402",
+    voltage="50V",
+    dielectric="X7R",
+    mpn="GCM155R71H104KE02D",
+    manufacturer="Murata Electronics",
+    P1=BOOST2,
+    P2=SW2,
+)
+
+Capacitor(
+    name="CINTVCC1",
+    value="4.7uF 10%",
+    package="0805",
+    voltage="16V",
+    dielectric="X7R",
+    mpn="GRM21BR71C475KE51L",
+    manufacturer="Murata Electronics",
+    P1=INTVCC,
+    P2=CS,
+)
+
+Capacitor(
+    name="CINTVCC2",
+    value="1uF 10%",
+    package="0402",
+    voltage="10V",
+    dielectric="X7R",
+    mpn="GRM155Z71A105KE01D",
+    manufacturer="Murata Electronics",
+    P1=INTVCC,
+    P2=CS,
+)
+
+Capacitor(
+    name="CSS",
+    value="22nF 10%",
+    package="0402",
+    voltage="50V",
+    dielectric="X7R",
+    mpn="GCM155R71H223KA55D",
+    manufacturer="Murata Electronics",
+    P1=SS,
+    P2=GND,
+)
+
+Capacitor(
+    name="CSTBY",
+    value="100nF 10%",
+    package="0402",
+    voltage="50V",
+    dielectric="X7R",
+    mpn="GCM155R71H104KE02D",
+    manufacturer="Murata Electronics",
+    P1=STBYMD,
+    P2=GND,
+)
+
+Resistor(
+    name="RPGOOD",
+    value="100kohm 1%",
+    package="0402",
+    mpn="ERJ-2RKF1003X",
+    manufacturer="Panasonic Electronic Components",
+    P1=PGOOD,
+    P2=VIN_5V,
+)
+
+Capacitor(
+    name="CIN1",
+    value="47uF 10%",
+    package="1210",
+    voltage="10V",
+    dielectric="X7R",
+    mpn="GRM32ER71A476KE15L",
+    manufacturer="Murata Electronics",
+    P1=VIN_5V,
+    P2=GND,
+)
+
+Capacitor(
+    name="CIN2",
+    value="47uF 10%",
+    package="1210",
+    voltage="10V",
+    dielectric="X7R",
+    mpn="GRM32ER71A476KE15L",
+    manufacturer="Murata Electronics",
+    P1=VIN_5V,
+    P2=GND,
+)
+
+Capacitor(
+    name="CIN3",
+    value="47uF 10%",
+    package="1210",
+    voltage="10V",
+    dielectric="X7R",
+    mpn="GRM32ER71A476KE15L",
+    manufacturer="Murata Electronics",
+    P1=VIN_5V,
+    P2=GND,
+)
+
+Capacitor(
+    name="CIN_HF",
+    value="100nF 10%",
+    package="0402",
+    voltage="50V",
+    dielectric="X7R",
+    mpn="GCM155R71H104KE02D",
+    manufacturer="Murata Electronics",
+    P1=VIN_5V,
+    P2=GND,
+)
+
+Capacitor(
+    name="COUT1",
+    value="47uF 10%",
+    package="1210",
+    voltage="10V",
+    dielectric="X7R",
+    mpn="GRM32ER71A476KE15L",
+    manufacturer="Murata Electronics",
+    P1=VOUT_ADJ,
+    P2=GND,
+)
+
+Capacitor(
+    name="COUT2",
+    value="47uF 10%",
+    package="1210",
+    voltage="10V",
+    dielectric="X7R",
+    mpn="GRM32ER71A476KE15L",
+    manufacturer="Murata Electronics",
+    P1=VOUT_ADJ,
+    P2=GND,
+)
+
+Capacitor(
+    name="COUT3",
+    value="47uF 10%",
+    package="1210",
+    voltage="10V",
+    dielectric="X7R",
+    mpn="GRM32ER71A476KE15L",
+    manufacturer="Murata Electronics",
+    P1=VOUT_ADJ,
+    P2=GND,
+)
+
+Capacitor(
+    name="COUT4",
+    value="47uF 10%",
+    package="1210",
+    voltage="10V",
+    dielectric="X7R",
+    mpn="GRM32ER71A476KE15L",
+    manufacturer="Murata Electronics",
+    P1=VOUT_ADJ,
+    P2=GND,
+)
+
+Board(
+    name="ltc3780_adjustable",
+    layers=4,
+    layout_path="layout/ltc3780_adjustable",
+)
+
+# pcb:sch CBOOT1.C x=-211.8200 y=189.5000 rot=0
+# pcb:sch CBOOT2.C x=486.6800 y=-89.9000 rot=0
+# pcb:sch CFF.C x=643.0800 y=164.1000 rot=90
+# pcb:sch CIN1.C x=-107.9500 y=-102.6000 rot=0
+# pcb:sch CIN2.C x=-23.1500 y=-102.6000 rot=0
+# pcb:sch CIN3.C x=61.6500 y=-102.6000 rot=0
+# pcb:sch CINTVCC1.C x=178.0900 y=-102.6000 rot=0
+# pcb:sch CINTVCC2.C x=262.8900 y=-102.6000 rot=0
+# pcb:sch CIN_HF.C x=-211.8200 y=-102.6000 rot=0
+# pcb:sch CITH.C x=319.0400 y=316.5000 rot=0
+# pcb:sch COUT1.C x=588.2800 y=-229.6000 rot=0
+# pcb:sch COUT2.C x=677.1800 y=-229.6000 rot=0
+# pcb:sch COUT3.C x=766.0800 y=-229.6000 rot=0
+# pcb:sch COUT4.C x=867.6800 y=-229.6000 rot=0
+# pcb:sch CP1.C x=405.4000 y=316.5000 rot=0
+# pcb:sch CSS.C x=423.1800 y=-229.6000 rot=0
+# pcb:sch CSTBY.C x=499.3800 y=-229.6000 rot=0
+# pcb:sch D1 x=102.1000 y=227.6000 rot=0
+# pcb:sch D2 x=367.3000 y=-51.8000 rot=180
+# pcb:sch L1 x=-39.1000 y=303.8000 rot=90
+# pcb:sch Q1 x=54.8800 y=49.8000 rot=0
+# pcb:sch Q2 x=54.8800 y=202.2000 rot=0
+# pcb:sch Q3 x=367.3000 y=202.2000 rot=0
+# pcb:sch Q4 x=359.4100 y=49.8000 rot=0
+# pcb:sch RFB_BOTTOM.R x=707.7800 y=240.3000 rot=270
+# pcb:sch RFB_FIXED.R x=992.1400 y=-280.4000 rot=-90
+# pcb:sch RITH.R x=141.2400 y=595.9000 rot=-270
+# pcb:sch RPGOOD.R x=77.7400 y=-255.0000 rot=0
+# pcb:sch RSENSE.R x=115.8400 y=405.4000 rot=0
+# pcb:sch RV1 x=715.0100 y=113.3000 rot=0
+# pcb:sch U1 x=316.5000 y=494.3000 rot=0
